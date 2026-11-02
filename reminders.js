@@ -33,8 +33,9 @@ async function hy(root){for(const el of root.querySelectorAll('[data-m]')){const
 const thumb=m=>`<button class="th" data-mv="${m.id}">${m.kind==='video'?`<video data-m="${m.id}" preload="metadata" muted playsinline></video><span class="pl">▶</span>`:`<img data-m="${m.id}" alt="">`}</button>`;
 
 /* push-уведомления через свой сервер на Cloudflare */
-const VAPID_PUB='BHzrb5Enj9P6Yn6N3z26E2t8IsqB8fUzLstt_IxIuETdRhtCEHGmJy1rARsgZsDOB6cQ5ZQCcuUiyiohDApAUAM';
+const VAPID_PUB='BH6wSlSwGqoIvHsslMlIQozuf-V7R2q_ZJWmxIbSuVsWykDSghmpio9wri6FpD3T-ZWW_bDChgrMf9LYEw7KyMo';
 window.VAPID_PUB=VAPID_PUB;
+if(localStorage.getItem('push-sub')&&localStorage.getItem('push-key')!==VAPID_PUB)localStorage.removeItem('push-sub'); // подписка на старый ключ недействительна
 const PC='push-cfg-v1';
 let cfg={};try{cfg=JSON.parse(localStorage.getItem(PC))||{}}catch(e){}
 const getSub=()=>{try{return JSON.parse(localStorage.getItem('push-sub'))}catch(e){return null}};
@@ -65,6 +66,15 @@ async function sync(r){
   }catch(e){r.push='err'}
 }
 async function unsync(r){if(r.push==='ok'&&cfg.url){try{await api({op:'del',id:r.id})}catch(e){}}}
+window.ensurePushSub=async()=>{
+  const reg=await navigator.serviceWorker.ready,want=unb64u(VAPID_PUB);
+  let s=await reg.pushManager.getSubscription();
+  const k=s&&s.options&&s.options.applicationServerKey;
+  if(s&&k){const a=new Uint8Array(k);if(a.length!==want.length||a.some((v,i)=>v!==want[i])){await s.unsubscribe();s=null}}
+  if(!s)s=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:want});
+  localStorage.setItem('push-sub',JSON.stringify(s));localStorage.setItem('push-key',VAPID_PUB);
+  return s;
+};
 function pushSheet(){
   openSheet(`<h2>Уведомления</h2><p class="mute" id="p_st">${esc(pushStatus())}</p>
   <label>Адрес сервера (Worker)<input id="p_u" value="${esc(cfg.url||'')}" placeholder="https://проект.vercel.app/api" autocapitalize="off" autocorrect="off"></label>
@@ -83,10 +93,7 @@ function pushSheet(){
     if(!pushOk()||!standalone()){msg(pushStatus());return}
     try{
       if(await Notification.requestPermission()!=='granted'){msg(pushStatus());return}
-      const reg=await navigator.serviceWorker.ready;
-      let s=await reg.pushManager.getSubscription();
-      if(!s)s=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:unb64u(VAPID_PUB)});
-      localStorage.setItem('push-sub',JSON.stringify(s));
+      await window.ensurePushSub();
       $('#p_st').textContent=pushStatus();msg('Готово. Нажмите «Отправить тестовое уведомление».');
     }catch(e){msg('Ошибка: '+(e&&e.message||e))}
   };
