@@ -257,9 +257,19 @@ async function chatOps(s, d, reply) {
 
 /* ---------- напоминания с push (по секретному коду из настройки) ---------- */
 async function legacy(d, reply) {
-  if (!process.env.TOKEN || d.t !== process.env.TOKEN) return reply({ error: 'bad token' }, 401);
+  // Вход по аккаунту (токен сессии) или по секретному коду TOKEN (прежний способ)
+  const s = await sess(d.s);
+  if (!s && (!process.env.TOKEN || d.t !== process.env.TOKEN)) return reply({ error: d.s ? 'auth' : 'bad token' }, 401);
+  const owned = async id => { // чужие напоминания трогать нельзя
+    if (!s) return true;
+    const raw = await redis('HGET', 'rqd', id);
+    const o = raw ? JSON.parse(raw) : null;
+    return !o || !o.usr || o.usr === s.usr;
+  };
   if (d.op === 'add') {
+    if (!(await owned(String(d.id)))) return reply({ error: 'forbidden' }, 403);
     const x = {
+      usr: s ? s.usr : '',
       id: String(d.id), sub: d.sub, title: String(d.title || 'Напоминание').slice(0, 100), body: String(d.body || '').slice(0, 300),
       at: Number(d.at), rep: d.rep === 'day' ? 'day' : '', until: Number(d.until) || 0, tz: String(d.tz || 'UTC'), hm: String(d.hm || ''),
     };
@@ -267,7 +277,11 @@ async function legacy(d, reply) {
     await redis('ZADD', 'rq', x.at, x.id);
     return reply({ ok: true });
   }
-  if (d.op === 'del') { await redis('ZREM', 'rq', String(d.id)); await redis('HDEL', 'rqd', String(d.id)); return reply({ ok: true }); }
+  if (d.op === 'del') {
+    if (!(await owned(String(d.id)))) return reply({ error: 'forbidden' }, 403);
+    await redis('ZREM', 'rq', String(d.id)); await redis('HDEL', 'rqd', String(d.id));
+    return reply({ ok: true });
+  }
   if (d.op === 'test') {
     const r = await push(d.sub, { title: 'Проверка', body: 'Уведомления работают' });
     return reply({ ok: r.ok, status: r.status, detail: r.ok ? '' : (await r.text()).slice(0, 200) });
