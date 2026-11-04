@@ -289,6 +289,18 @@ async function legacy(d, reply) {
   return reply({ error: 'unknown op' }, 400);
 }
 
+/* ---------- проверка настроек: открыть /api?check=1 ---------- */
+async function health() {
+  const t = async f => { try { await f(); return 'ok'; } catch (e) { return 'ошибка: ' + String(e && e.message || e).slice(0, 90); } };
+  return {
+    ok: true, v: 3,
+    postgres: await t(() => one('SELECT 1 AS x')),
+    redis: await t(() => redis('PING')),
+    vapid: process.env.VAPID_JWK && process.env.VAPID_PUBLIC && process.env.VAPID_SUBJECT ? 'ok' : 'нет переменных VAPID_JWK, VAPID_PUBLIC или VAPID_SUBJECT',
+    cron_key: process.env.CRON_KEY ? 'ok' : 'нет переменной CRON_KEY',
+  };
+}
+
 /* ---------- вход в функцию ---------- */
 async function readBody(req) {
   let b = req.body;
@@ -307,13 +319,14 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(204).end();
   const reply = (o, s = 200) => res.status(s).json(o);
   try {
+    const qs = req.query || {};
+    if (qs.cron !== undefined) { // запуск рассылки: любой планировщик (GET или POST)
+      if (!process.env.CRON_KEY || qs.cron !== process.env.CRON_KEY) return reply({ error: 'bad key' }, 401);
+      return reply(await cron());
+    }
     if (req.method === 'GET') {
-      const k = req.query && req.query.cron;
-      if (k !== undefined) {
-        if (!process.env.CRON_KEY || k !== process.env.CRON_KEY) return reply({ error: 'bad key' }, 401);
-        return reply(await cron());
-      }
-      return reply({ ok: true, info: 'moi-chasy server' });
+      if (qs.check !== undefined) return reply(await health());
+      return reply({ ok: true, info: 'moi-chasy server', v: 3 });
     }
     if (req.method !== 'POST') return reply({ error: 'method' }, 405);
     let d;
