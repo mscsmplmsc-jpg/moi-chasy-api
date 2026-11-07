@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS msgs(id BIGSERIAL PRIMARY KEY, a TEXT, b TEXT, frm TE
 CREATE INDEX IF NOT EXISTS msgs_ab ON msgs(a, b, id);
 CREATE TABLE IF NOT EXISTS sigs(id BIGSERIAL PRIMARY KEY, to_user TEXT, frm TEXT, data TEXT, ts BIGINT);
 CREATE TABLE IF NOT EXISTS subs(endpoint TEXT PRIMARY KEY, usr TEXT, sub TEXT);
+CREATE TABLE IF NOT EXISTS watchers(usr TEXT PRIMARY KEY);
 `;
 let pool, ready;
 const db = () => pool || (pool = new Pool({ connectionString: process.env.POSTGRES_URL || process.env.DATABASE_URL, max: 3 }));
@@ -159,6 +160,9 @@ async function account(d, reply) {
     const n = await run('INSERT INTO users(name,salt,hash,created) VALUES($1,$2,$3,$4) ON CONFLICT (name) DO NOTHING', [name, salt, hash, Date.now()]);
     if (!n) return reply({ error: 'Это имя уже занято' }, 409);
     const s = await newSession(name, d.label);
+    try { // оповещение тем, кто включил секретную функцию
+      for (const w of await all('SELECT usr FROM watchers WHERE usr<>$1', [name])) await notify(w.usr, { title: 'Новый пользователь', body: name + ' зарегистрировался' });
+    } catch (e) { console.log('watch notify error', String(e)); }
     return reply({ ok: true, token: s.token, user: name });
   }
   const u = name && await one('SELECT * FROM users WHERE name=$1', [name]);
@@ -178,7 +182,7 @@ async function account(d, reply) {
 }
 
 /* ---------- синхронизация данных ---------- */
-const DOCS = ['hours', 'crm', 'rem', 'tsk', 'meta'];
+const DOCS = ['hours', 'crm', 'rem', 'tsk', 'meta', 'money', 'sched'];
 async function synced(s, d, reply) {
   const u = s.usr;
   if (d.op === 'logout') {
@@ -207,13 +211,18 @@ async function synced(s, d, reply) {
 }
 
 /* ---------- мессенджер ---------- */
-const CHATOPS = ['peer', 'send', 'poll', 'clear', 'sig', 'subscribe', 'ice'];
+const CHATOPS = ['peer', 'send', 'poll', 'clear', 'sig', 'subscribe', 'ice', 'watch'];
 const userExists = async n => !!(n && await one('SELECT 1 AS x FROM users WHERE name=$1', [n]));
 async function chatOps(s, d, reply) {
   const u = s.usr, now = Date.now();
   if (d.op === 'subscribe') {
     if (!d.sub || !d.sub.endpoint || !d.sub.keys) return reply({ error: 'bad sub' }, 400);
     await run('INSERT INTO subs(endpoint,usr,sub) VALUES($1,$2,$3) ON CONFLICT (endpoint) DO UPDATE SET usr=EXCLUDED.usr, sub=EXCLUDED.sub', [String(d.sub.endpoint), u, JSON.stringify(d.sub)]);
+    return reply({ ok: true });
+  }
+  if (d.op === 'watch') {
+    if (d.on) await run('INSERT INTO watchers(usr) VALUES($1) ON CONFLICT DO NOTHING', [u]);
+    else await run('DELETE FROM watchers WHERE usr=$1', [u]);
     return reply({ ok: true });
   }
   if (d.op === 'ice') return reply({ ok: true, iceServers: [{ urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.l.google.com:19302'] }] });
